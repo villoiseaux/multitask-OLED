@@ -17,3 +17,4 @@ Dans PubSubClient.h
 #define MQTT_MAX_PACKET_SIZE 1024
 #endif
 </pre>
+Le 128 présent par défaut doit etre remplacé par 1024 (ou plus)
