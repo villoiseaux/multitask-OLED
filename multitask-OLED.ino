@@ -13,6 +13,8 @@
 #include <WiFiMulti.h>
 #include <PubSubClient.h>
 
+//#define WIFI_ENABELED
+
 const char* server = "mare.pion-hebert.fr";
 
 void mqttCallback(char* topic, byte* payload, unsigned int length);
@@ -51,15 +53,17 @@ struct Spectrum {
 PlainFFT FFT = PlainFFT(); // Create FFT object
 
 double squelch = 4; /// minimum peak value to display 
-double samplingFrequency = 400; // in Hz
-unsigned long delayBetweenAcq = 5000; // in milli seconds
+double samplingFrequency = 200; // in Hz (1 acq = (1/400)*DATASIZE )
+unsigned long delayBetweenAcq = 0; // in milli seconds
 unsigned long sampleDelay=(1000*1000/samplingFrequency);
+unsigned long sampleCount = 235; // 5 min=467
 uint8_t signalIntensity = 100;
 double vReal[DATASIZE]; 
 double vImag[DATASIZE];
 
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  #ifdef WIFI_ENABELED
   Serial.print("Message arrived [");
   Serial.print(topic);
   Serial.print("] ");
@@ -67,6 +71,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     Serial.print((char)payload[i]);
   }
   Serial.println();
+  #endif
 }
 
 void collectTask (void *args) { // TASK THAT COLLECT SIGNAL AND TRANSMIT IT
@@ -78,7 +83,7 @@ void collectTask (void *args) { // TASK THAT COLLECT SIGNAL AND TRANSMIT IT
   adcAttachPin(analogInPin);
   adcStart(analogInPin); 
   while (true) {
-    digitalWrite (ACT_LED,LOW);
+    digitalWrite (ACT_LED,HIGH);
     vTaskDelay(10 / portTICK_PERIOD_MS);
     int sensorValue = 0; 
     mesure.timestamp=millis();
@@ -94,7 +99,7 @@ void collectTask (void *args) { // TASK THAT COLLECT SIGNAL AND TRANSMIT IT
       sampleCount++;
     }
     sampleCount=0;    
-    digitalWrite (ACT_LED,HIGH);
+    digitalWrite (ACT_LED,LOW);
     xQueueSend(queue,(void*)&mesure,  (TickType_t)0 );
     vTaskDelay(delayBetweenAcq / portTICK_PERIOD_MS);
   }
@@ -102,6 +107,7 @@ void collectTask (void *args) { // TASK THAT COLLECT SIGNAL AND TRANSMIT IT
 
 
 bool mqttConnect() {
+  #ifdef WIFI_ENABELED
   while (!client.connected()) {
     Serial.println("Connecting to MQTT...");
  
@@ -118,6 +124,7 @@ bool mqttConnect() {
  
     }
   }  
+  #endif
   return (true);
 }
 
@@ -126,7 +133,7 @@ void setup() { // INITIALIZE THE SYSTEM
   display.init();
   display.flipScreenVertically();
   display.setFont(ArialMT_Plain_10);
-  display.drawString(0,0,"Firmware");
+  display.drawString(0,0,"Firmware update...");
   display.display();    
   delay (500);
   display.drawString(0,0,"Booting");
@@ -149,57 +156,61 @@ void setup() { // INITIALIZE THE SYSTEM
     &hCollectTask,
     0); // here is the core
 
-  
-  Serial.println("Start wifi");
-  display.drawString(0,12,"Start WIFI");
-  display.display();    
-  WiFi.begin(ssid, password);
-  display.display();    
-  while (WiFi.status() != WL_CONNECTED) {
-    display.clear();
-    display.drawString(24,12,"WIFI");
-    display.display();    
-    delay(250);
-    display.clear();
-    display.display();    
-    delay(250);    
-    Serial.print(".");    
-  }
-  randomSeed(micros());
-  Serial.println("Wifi OK");
-  Serial.println("SETUP DONE");
-  display.clear();
-  display.drawString(0,24,"WIFI OK");
-  display.display();    
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
-  
-  Serial.println("Contact cloud");
-  client.setServer(mqttServer, mqttPort);
- 
 
-  if (mqttConnect()){
-    client.publish("jpinon/message", "Hello from ESP32");
-  }
-
+  #ifdef WIFI_ENABELED
+    Serial.println("Start wifi");
+    display.drawString(0,12,"Start WIFI");
+    display.display();    
+    WiFi.begin(ssid, password);
+    display.display();    
+    while (WiFi.status() != WL_CONNECTED) {
+      display.clear();
+      display.drawString(24,12,"WIFI");
+      display.display();    
+      delay(250);
+      display.clear();
+      display.display();    
+      delay(250);    
+      Serial.print(".");    
+    }
+    randomSeed(micros());
+    Serial.println("Wifi OK");
+    Serial.println("SETUP DONE");
+    display.clear();
+    display.drawString(0,24,"WIFI OK");
+    display.display();    
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());
+    
+    Serial.println("Contact cloud");
+    client.setServer(mqttServer, mqttPort);
+   
+  
+    if (mqttConnect()){
+      client.publish("jpinon/message", "Module started");
+    }
+  #else
+    Serial.println("WIFI DISABLED IN COMILATION OPTIONS");
+  #endif
 }
 
 /*
  * Receive signal process and display
  */
+
+double sum[DATASIZE / 2];
+unsigned long svgCount=sampleCount;
+ 
 void loop() { 
   struct Spectrum mesure;
   String json;
+  #ifdef WIFI_ENABELED
   if (WiFi.status() == WL_CONNECTED){    
+  #endif
     vTaskDelay(10 / portTICK_PERIOD_MS);
 
     if (queue != NULL){    
       if (xQueueReceive(queue, &mesure, (TickType_t)10) == pdTRUE){
-  
-   //     Serial.printf("RECEIVER  [core# %d] Someting to read in the queue: ",xPortGetCoreID());
-   //     Serial.printf("received timestamp %d\n", mesure.timestamp);
-        // FFT PROCESS
-        
         int mMax=0;
         for (int i=0; i<DATASIZE; i++) {
           if (mesure.data[i]>mMax) mMax=mesure.data[i];
@@ -208,33 +219,58 @@ void loop() {
         FFT.windowing(vReal, DATASIZE);  // Weigh data
         FFT.compute(vReal, vImag, DATASIZE, FFT_FORWARD); // Compute FFT
         FFT.complexToMagnitude(vReal, vImag, DATASIZE); // Compute magnitudes
+        // Filter 154Hz
+/*        vReal[48]=vReal[48]/3.8;
+        vReal[49]=vReal[49]/137.8/32;
+        vReal[50]=vReal[50]/109.6/32;
+        vReal[51]=vReal[51]/1.9;*/
         // get max value
         double vmax=0;
         for (int i=2; i<(DATASIZE / 2); i++) {
           if (vReal[i] > vmax) vmax=vReal[i];
         }
               
-        if (mMax>0) { /// somthing to display        
+        if (mMax>0) { /// somthing to process        
           double peak=FFT.majorPeak(vReal, DATASIZE, samplingFrequency);
           if (vmax >squelch) { // DISPLAY GRAPH
-            
-            json="{\"timestamp\":"+String(mesure.timestamp)+",\"majorFreq\":"+peak+"\",\"majorVal\":"+vmax+",\"squelch\":"+squelch+",\"data\":[";
             display.clear();
-            for (int i=0; i<(DATASIZE / 2); i++) {            
-              display.drawVerticalLine(i*2,64-map((int)vReal[i],0,(int)vmax,0,50), 64);
-              if(i>0) json+=", ";
-              json+=("\""+String(vReal[i])+"\"");
+            for (int i=2; i<(DATASIZE / 2); i++) {            
+              display.drawVerticalLine(i*2,54-map((int)vReal[i],0,(int)vmax,0,40), map((int)vReal[i],0,(int)vmax,0,40));              
             }
-            json+="]}";
             //Serial.println(json);
             display.setFont(ArialMT_Plain_10); 
             display.drawString(0,0,"p="+String(peak,1)+"Hz max="+String(vmax,1));
+            display.drawRect(0,57,127,6);
+            display.fillRect(2,59,map(sampleCount-svgCount,0,sampleCount,2,123),2);
             display.display();  
+
+            // SEND ONLY ID sampleCount reached
+            if (svgCount>1){
+              // add sample
+              for (int i=0; i<(DATASIZE / 2); i++) { 
+                sum[i]+=(int)vReal[i];
+              }
+              svgCount--;
+            } else {
+              // send spectrum
               if (mqttConnect()){
+                json="{\"freqAcq\":"+String(samplingFrequency)+",\"timestamp\":"+String(mesure.timestamp)+",\"majorFreq\":"+peak+"\",\"majorVal\":"+vmax+",\"squelch\":"+squelch+",\"data\":[";
+                for (int i=0; i<(DATASIZE / 2); i++) {            
+                  if(i>0) json+=", ";
+                  json+=("\""+String(sum[i]/sampleCount)+"\"");
+                }
+                json+="]}";
                 char buf[1000];
                 json.toCharArray(buf,1000);
-                client.publish("jpinon/mesure/spectrum", buf);
-             }
+                #ifdef WIFI_ENABELED
+                  client.publish("jpinon/mesure/spectrum", buf);
+                #endif
+              }
+              for (int i=0; i<(DATASIZE / 2); i++) {  
+                sum[i]=0;
+              }
+              svgCount=sampleCount;
+            }
             
           } else {
              
@@ -252,7 +288,9 @@ void loop() {
         }
       } 
     }
+  #ifdef WIFI_ENABELED   
   } else {
     Serial.println(".");
   }
+  #endif
 }
